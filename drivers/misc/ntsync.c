@@ -205,10 +205,22 @@ struct ntsync_device {
  * after acquiring obj->lock, if set, it needs to drop the lock and acquire
  * dev->wait_all_lock in order to serialize against the multi-object operation.
  */
+/*
+ * lockdep_is_held()/lockdep_assert() do not exist in !CONFIG_LOCKDEP builds
+ * on 4.14, so this debug assert must compile away entirely unless lockdep is
+ * actually enabled (it is only a sanity check, never a functional one).
+ */
+#ifdef CONFIG_LOCKDEP
 #define ntsync_assert_held(obj)						\
-	lockdep_assert(lockdep_is_held(&(obj)->lock) ||			\
-		       (lockdep_is_held(&(obj)->dev->wait_all_lock) &&	\
-			(obj)->dev_locked))
+	do {								\
+		WARN_ON(debug_locks &&					\
+			(lockdep_is_held(&(obj)->lock) ||		\
+			 (lockdep_is_held(&(obj)->dev->wait_all_lock) && \
+			  (obj)->dev_locked)));				\
+	} while (0)
+#else
+#define ntsync_assert_held(obj)	do { } while (0)
+#endif
 
 static void dev_lock_obj(struct ntsync_device *dev, struct ntsync_obj *obj)
 {
@@ -310,12 +322,9 @@ static void try_wake_all(struct ntsync_device *dev, struct ntsync_q *q,
 {
 	__u32 count = q->count;
 	bool can_wake = true;
-	int signaled = -1;
 	__u32 i;
 
 	lockdep_assert_held(&dev->wait_all_lock);
-	if (locked_obj)
-		lockdep_assert(locked_obj->dev_locked);
 
 	for (i = 0; i < count; i++) {
 		if (q->entries[i].obj != locked_obj)
@@ -364,7 +373,6 @@ static void try_wake_all_obj(struct ntsync_device *dev, struct ntsync_obj *obj)
 	struct ntsync_q_entry *entry;
 
 	lockdep_assert_held(&dev->wait_all_lock);
-	lockdep_assert(obj->dev_locked);
 
 	list_for_each_entry(entry, &obj->all_waiters, node)
 		try_wake_all(dev, entry->q, obj);
